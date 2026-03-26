@@ -1,0 +1,57 @@
+# Example: Make an authenticated API call
+# Demonstrates: secure_fill with env backend, extract to capture response
+#
+# NOTE: The HTTP actuator is not yet implemented. This recipe shows the
+# intended format. For now, use the playwright actuator to fill API keys
+# into web-based API consoles, or use secure_fetch + secure_fill for
+# browser-based API testing tools.
+
+name: example-api-call
+description: Make an authenticated API call with credential isolation
+version: "1.0"
+tags: [example, api, http]
+
+credentials:
+  api:
+    store: env                       # API key from environment variable
+    item: "OPENAI_API_KEY"           # env var name
+    fields:
+      key: key                       # logical name for the credential
+
+# For browser-based API consoles (e.g., Swagger UI, Postman web)
+actuator: playwright
+
+config:
+  api_console_url: "https://platform.openai.com/playground"
+
+steps:
+  - action: navigate
+    url: "${config.api_console_url}"
+    wait_for: "Playground"
+    percept: "Loaded API console"
+
+  # Fill the API key into the console's auth field
+  - action: secure_fill
+    target: { selector: 'input[placeholder="API Key"]' }
+    credential: api.key
+    percept: "Entered API key [MASKED]"
+
+  - action: screenshot
+    label: "api-ready"
+    percept: "Screenshot: API console with key filled"
+
+  # Approval gate before making any calls
+  - action: await_approval
+    gate: confirm_api_call
+    message: "API key is filled. Approve to proceed with API call?"
+
+  - action: click
+    target: { text: "Submit" }
+    wait_for: "Response"
+    percept: "API call submitted"
+
+  - action: extract
+    targets:
+      response_status: { selector: '.response-status' }
+      response_body: { selector: '.response-body' }
+    percept: "Response: ${extract.response_status}"

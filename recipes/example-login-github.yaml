@@ -1,0 +1,65 @@
+# Example: Login to GitHub with 2FA
+# Demonstrates: secure_fill for password, approval gate for 2FA code
+
+name: example-login-github
+description: Log in to GitHub with username/password and 2FA approval gate
+version: "1.0"
+tags: [example, login, 2fa]
+
+credentials:
+  github:
+    store: rbw                      # or: bitwarden, pass, yaml, env
+    item: "github.com"
+    fields:
+      username: username
+      password: password
+
+actuator: playwright
+
+config:
+  login_url: "https://github.com/login"
+
+steps:
+  - action: navigate
+    url: "${config.login_url}"
+    wait_for: "Sign in to GitHub"
+    percept: "Loaded GitHub login page"
+
+  # Username could be filled as plaintext (visible to agent) or secure.
+  # Here we use secure_fill since it's in the credential store.
+  - action: secure_fill
+    target: { selector: 'input[name="login"]' }
+    credential: github.username
+    percept: "Entered username [MASKED]"
+
+  # Password is sensitive -- use secure_fill
+  - action: secure_fill
+    target: { selector: 'input[name="password"]' }
+    credential: github.password
+    percept: "Entered password [MASKED]"
+
+  - action: click
+    target: { selector: 'input[type="submit"]' }
+    wait_for: "Two-factor"
+    percept: "Submitted login, 2FA page loaded"
+
+  # Screenshot before the approval gate so agent/human can see the 2FA prompt
+  - action: screenshot
+    label: "2fa-prompt"
+    percept: "Screenshot of 2FA page"
+
+  # Approval gate -- execution pauses here.
+  # The human enters the 2FA code manually in the browser,
+  # then tells the agent to proceed.
+  - action: await_approval
+    gate: 2fa_entry
+    message: "Enter your 2FA code in the browser, then approve to continue."
+
+  # After 2FA, verify we're logged in
+  - action: assert
+    target: { selector: '[aria-label="Open user navigation menu"]' }
+    percept: "Verified: logged in to GitHub"
+
+  - action: screenshot
+    label: "logged-in"
+    percept: "Screenshot of logged-in state"

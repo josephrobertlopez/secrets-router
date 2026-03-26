@@ -1,0 +1,84 @@
+# Recipe Template
+# Copy this file and fill in the blanks.
+# See recipes/README.md for the full action reference.
+
+name: my-recipe                      # unique ID, matches filename
+description: "What this recipe does" # shown to the agent
+version: "1.0"
+tags: []                             # e.g. [bill-pay, login, api]
+
+# ---- CREDENTIALS ----
+# Sensitive values fetched from your credential store.
+# The agent never sees these -- only masked previews.
+credentials:
+  # Each key becomes a namespace. Reference fields as namespace.field
+  # in secure_fill steps (e.g., account.password).
+  account:
+    store: rbw                       # rbw | bitwarden | pass | yaml | env
+    item: "item-name-in-store"       # item name or env var name
+    fields:
+      username: username             # logical name: store field path
+      password: password
+
+# ---- CONFIG ----
+# Non-sensitive values. The agent CAN see these.
+# Override at runtime: secure_run_recipe("my-recipe", config_overrides={...})
+config:
+  url: "https://example.com"
+  account_number: "12345"
+
+# ---- ACTUATOR ----
+actuator: playwright                 # playwright (browser via CDP)
+
+# ---- STEPS ----
+# Each step has an action and a percept (what the agent sees).
+steps:
+  # Navigate to the page
+  - action: navigate
+    url: "${config.url}"
+    wait_for: "Login"                # wait until this text appears
+    percept: "Loaded login page"
+
+  # Fill a non-sensitive field (agent sees the value)
+  - action: fill
+    target: { selector: 'input[name="account"]' }
+    value: "${config.account_number}"
+    percept: "Entered account: ${config.account_number}"
+
+  # Fill a sensitive field (agent sees only [MASKED])
+  - action: secure_fill
+    target: { selector: 'input[name="password"]' }
+    credential: account.password
+    percept: "Entered password [MASKED]"
+
+  # Click a button
+  - action: click
+    target: { text: "Submit" }
+    wait_for: "Dashboard"
+    percept: "Submitted login"
+
+  # Take a screenshot before an important action
+  - action: screenshot
+    label: "review"
+    percept: "Screenshot of current page"
+
+  # Approval gate -- execution pauses until agent/human approves
+  - action: await_approval
+    gate: confirm_action
+    message: "Review the page. Approve to continue?"
+
+  # Extract visible data from the page
+  - action: extract
+    targets:
+      confirmation: { selector: '.confirmation-number' }
+    percept: "Confirmation: ${extract.confirmation}"
+
+# ---- CHECKLIST ----
+# Before using this recipe:
+# [ ] Every sensitive field uses secure_fill, not fill
+# [ ] Approval gate before any irreversible action
+# [ ] Screenshot before each approval gate
+# [ ] Extract captures confirmation numbers after completion
+# [ ] Config values are overridable (not hardcoded in steps)
+# [ ] Percepts describe progress clearly
+# [ ] Credentials block references real store items

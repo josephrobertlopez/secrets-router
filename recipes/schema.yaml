@@ -1,0 +1,142 @@
+# secrets-router Recipe Schema v1.0
+# Agent sees percepts. MCP resolves credentials and actuators.
+
+# ─── RECIPE STRUCTURE ───
+
+# name: human-readable recipe identifier
+# description: what this recipe does (shown to Claude)
+# version: semver
+
+# credentials: named credential bundles resolved from secure stores
+#   Each key becomes a namespace: card.number, bank.routing, etc.
+#   Values are NEVER returned to Claude — only handles and masks
+
+# actuator: which execution backend to use
+#   playwright: browser automation via CDP
+#   http: REST API calls via httpx
+#   cli: shell command execution
+#   compose: chain multiple actuators
+
+# steps: ordered list of actions
+#   Each step has:
+#     action: primitive verb
+#     percept: what Claude sees after this step (label, screenshot, extracted text)
+#     actuator_args: what the MCP uses internally (selectors, URLs, credential refs)
+
+# gates: approval checkpoints where Claude must confirm before continuing
+
+# ─── CREDENTIAL SOURCES ───
+# store: rbw | bitwarden | pass | yaml | env
+# item: item name in the store
+# fields: map of logical names → store field paths
+#
+# Example:
+#   credentials:
+#     card:
+#       store: rbw
+#       item: "primary card"
+#       fields:
+#         number: number        # rbw get --field number "primary card"
+#         name: name
+#         exp_month: exp_month
+#         exp_year: exp_year
+#         cvv: cvv
+#     bank:
+#       store: rbw
+#       item: "checking account"
+#       fields:
+#         routing: routing
+#         account: account
+
+# ─── ACTION PRIMITIVES ───
+# These are actuator-agnostic verbs. The actuator backend interprets them.
+#
+# NAVIGATION:
+#   navigate:       { url, wait_for? }
+#   click:          { target, wait_for?, wait_for_tab? }
+#   back:           {}
+#   switch_tab:     { index }
+#
+# FORM:
+#   fill:           { target, value }              # plaintext — Claude CAN see
+#   secure_fill:    { target, credential }          # from store — Claude CANNOT see
+#   select:         { target, option }
+#   check:          { target }
+#   uncheck:        { target }
+#
+# HTTP (for API actuator):
+#   request:        { method, url, headers?, body? }
+#   secure_request: { method, url, headers?, body_template, credentials }
+#
+# CLI (for shell actuator):
+#   run:            { command, args? }
+#   secure_run:     { command_template, credentials }
+#
+# OBSERVATION:
+#   screenshot:     { label }                       # returns image to Claude
+#   extract:        { targets, return_to_claude }    # scrape visible data
+#   assert:         { target, contains? }            # verify state
+#
+# CONTROL:
+#   await_approval: { message? }                    # Claude must confirm
+#   sleep:          { seconds }
+#   conditional:    { if_exists: target, then: steps, else: steps }
+#   loop:           { while_exists: target, steps, max_iterations }
+#
+# TRANSFORMS (applied to credential values before filling):
+#   pad2:           "9" → "09"
+#   last2:          "2028" → "28"
+#   last4:          "4111111111111111" → "1017"
+#   pad2_slash_last2: exp_month + exp_year → "09 / 28"
+#   mask:           "4111111111111111" → "41***7"
+#   concat:         [field1, " ", field2] → "first last"
+
+# ─── TARGET RESOLUTION ───
+# Targets are actuator-agnostic references to page/API elements.
+# The actuator backend resolves them:
+#
+# Playwright targets:
+#   selector: 'input[placeholder="Card Number"]'
+#   text: 'Pay Bill'
+#   role: { role: button, name: 'Continue' }
+#   ref: e125  (from snapshot)
+#
+# HTTP targets:
+#   json_path: '$.data.card_number'
+#   header: 'Authorization'
+#   query_param: 'token'
+#
+# CLI targets:
+#   arg: '--card-number'
+#   env: 'CARD_NUMBER'
+#   stdin: true
+
+# ─── PERCEPT CONTRACT ───
+# What Claude sees for each action:
+#
+# fill:           "filled: Name on Card = Jane Smith"
+# secure_fill:    "filled: Credit Card Number = [MASKED ****1017]"
+# navigate:       "navigated to: Milwaukee Water Works (200 OK)"
+# click:          "clicked: Pay Bill"
+# screenshot:     <actual image>
+# extract:        { confirmation: "0105502559", total: "$216.68" }
+# await_approval: "Waiting for approval: Review payment $216.68?"
+# request:        "POST /api/pay → 200 OK"
+# secure_request: "POST /api/pay → 200 OK (card=[MASKED])"
+
+# ─── SECURITY PROPERTIES ───
+#
+# 1. CREDENTIAL ISOLATION: Agent's view of any secure_* action is a masked
+#    string — contains only last-4 digits, which reveals nothing about the
+#    full value.
+#
+# 2. BACKEND DISPATCH: Config selects backend (playwright/http/cli).
+#    Recipe structure stays the same regardless of which backend is used.
+#    Swapping actuators (playwright→http) preserves the recipe.
+#
+# 3. SINGLE-USE VALUES: Credential values exist in server memory only
+#    during step execution. Zeroed after each secure_* completes.
+#
+# 4. APPROVAL GATES: await_approval pauses execution — agent must
+#    inspect the percept (screenshot) and decide to continue.
+#    Human-in-the-loop before irreversible actions.

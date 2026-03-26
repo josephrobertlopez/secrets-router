@@ -1,0 +1,11 @@
+precepts/inventory.yaml
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.benchmarks/
+REVIEW.md
+REVIEW_FINAL.md
+LINKEDIN_DRAFT.md

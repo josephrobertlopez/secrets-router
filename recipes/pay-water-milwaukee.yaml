@@ -1,0 +1,135 @@
+name: pay-water-milwaukee
+description: Pay Milwaukee Water Works bill via credit card
+version: "1.0"
+
+credentials:
+  card:
+    store: rbw
+    item: "primary card"
+    fields:
+      number: number
+      name: name
+      exp_month: exp_month
+      exp_year: exp_year
+      cvv: cvv
+
+actuator: playwright
+
+config:
+  account_number: "YOUR_ACCOUNT_NUMBER"
+  email: "you@example.com"
+  phone: "5551234567"
+  payer_name: "Your Name"
+
+steps:
+  - action: navigate
+    url: https://paywater.milwaukee.gov
+    wait_for: "Account Number"
+    percept: "Loaded Milwaukee Water Works portal"
+
+  - action: fill
+    target: { selector: 'input[placeholder="Account Number"]' }
+    value: "${config.account_number}"
+    percept: "Entered account number"
+
+  - action: click
+    target: { text: "Continue" }
+    wait_for: "Balance"
+    percept: "Account loaded"
+
+  - action: extract
+    targets:
+      balance: { selector: 'strong:near-text("Current Balance")' }
+      due_date: { selector: 'strong:near-text("due")' }
+    return_to_claude: true
+    percept: "Balance: ${balance} due ${due_date}"
+
+  - action: click
+    target: { text: "Pay Bill" }
+    wait_for: "Pay My Bill"
+    percept: "Payment widget opened"
+
+  - action: click
+    target: { text: "Pay My Bill" }
+    wait_for_tab: 1
+    percept: "Payment form opened (new tab)"
+
+  - action: fill
+    target: { selector: 'input[placeholder="Name"]' }
+    value: "${config.payer_name}"
+
+  - action: fill
+    target: { selector: 'input[placeholder="Phone Number"]' }
+    value: "${config.phone}"
+
+  - action: click
+    target: { text: "Continue" }
+    wait_for: "Credit Card"
+    percept: "Account info submitted"
+
+  - action: click
+    target: { text: "Credit Card" }
+    wait_for: "Name on Card"
+    percept: "Credit card form displayed"
+
+  - action: secure_fill
+    target: { selector: 'input[placeholder="Name on Card"]' }
+    credential: card.name
+    percept: "filled: Name on Card [MASKED]"
+
+  - action: secure_fill
+    target: { selector: 'input[placeholder="Credit Card Number"]' }
+    credential: card.number
+    percept: "filled: Card Number [MASKED ****${card.number|last4}]"
+
+  - action: secure_fill
+    target: { selector: 'input[placeholder="MM / YY"]' }
+    credential: card.exp_month
+    transform: pad2_slash_last2
+    transform_args: { year_field: card.exp_year }
+    percept: "filled: Expiration [MASKED]"
+
+  - action: secure_fill
+    target: { selector: 'input[placeholder="CVV"]' }
+    credential: card.cvv
+    percept: "filled: CVV [MASKED]"
+
+  - action: click
+    target: { text: "Continue" }
+    wait_for: "Review"
+    percept: "Payment review page"
+
+  - action: fill
+    target: { selector: 'input[placeholder="Email Address"]' }
+    value: "${config.email}"
+
+  - action: check
+    target: { selector: 'input[type="checkbox"]' }
+    percept: "Terms accepted"
+
+  - action: screenshot
+    label: "review"
+    percept: "Screenshot of payment review page"
+
+  - action: extract
+    targets:
+      total: { selector: 'td:has-text("Total") + td' }
+      method: { selector: 'td:has-text("Payment Method") + td' }
+    return_to_claude: true
+    percept: "Payment: ${total} via ${method}"
+
+  - action: await_approval
+    message: "Confirm payment of ${total} via ${method}?"
+
+  - action: click
+    target: { text: "Make a Payment" }
+    wait_for: "Thank you"
+    percept: "Payment submitted"
+
+  - action: extract
+    targets:
+      confirmation: { selector: 'td:has-text("Confirmation Number") + td' }
+      total: { selector: 'td:has-text("Total") + td' }
+      date: { selector: 'td:has-text("Payment Date") + td' }
+    return_to_claude: true
+    percept: "Confirmation: ${confirmation} | ${total} | ${date}"
