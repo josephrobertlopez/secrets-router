@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from server import secure_analyze_page
 
 
-# Define 10 PII test vectors
+# Define 10 PII test vectors + known-limitation paraphrase vector
 PII_VECTORS = {
     "ssn_dashes": "123-45-6789",
     "ssn_spaces": "123 45 6789",
@@ -41,6 +41,9 @@ PII_VECTORS = {
     "password": "password: SuperSecret123!",
     "mastercard": "5425233010103442",
     "phone_parens": "(555) 123-4567",
+    # Known limitation: semantic paraphrase cannot be caught by regex
+    # This is documented in sanitizer.py bypass surface
+    "paraphrased_ssn": "social security one two three dash four five dash six seven eight nine",
 }
 
 
@@ -119,10 +122,17 @@ async def test_secure_analyze_page_sanitizes_pii_before_return(mock_ollama, mock
     assert result["status"] == "analyzed"
     analysis = result["analysis"]
 
-    # Verify all 10 PII vectors are NOT present in the response
+    # Verify all PII vectors are sanitized in the response
     response_str = json.dumps(analysis)
 
+    # Known limitations (where regex cannot catch the leak)
+    known_limitation_vectors = {"paraphrased_ssn"}
+
     for pii_name, pii_value in PII_VECTORS.items():
+        if pii_name in known_limitation_vectors:
+            # Skip known-limitation vectors (documented bypass surface)
+            continue
+
         # The exact PII value should NOT appear in the response
         assert pii_value not in response_str, (
             f"PII leak detected: {pii_name} '{pii_value}' found in response"
@@ -130,36 +140,9 @@ async def test_secure_analyze_page_sanitizes_pii_before_return(mock_ollama, mock
 
     # Verify that redaction markers ARE present (not all redactions will show up
     # due to regex patterns, but some should)
-    assert "[REDACTED" in response_str or "REDACTED" in response_str or len(analysis) > 0, (
-        "Response should contain redaction markers or be empty dict"
+    assert "[REDACTED" in response_str or "REDACTED" in response_str, (
+        "Response should contain redaction markers"
     )
-
-
-@pytest.mark.asyncio
-async def test_secure_analyze_page_without_sanitization_leaks_pii(mock_cdp):
-    """Test that WITHOUT sanitization, PII would be leaked (this should fail before the fix).
-
-    This test demonstrates what the vulnerability looks like.
-    """
-    with patch("server.OllamaClient") as mock_class:
-        # Mock Ollama without going through sanitize_output
-        mock_instance = AsyncMock()
-        mock_class.return_value = mock_instance
-        mock_instance.health_check = AsyncMock(return_value=True)
-
-        # Return raw PII without sanitization
-        pii_response = {
-            "found_ssn": "123-45-6789",
-            "credit_card": "4532148803436467",
-        }
-        mock_instance.analyze_text = AsyncMock(return_value=pii_response)
-
-        result = await secure_analyze_page(analysis_type="text")
-        analysis = result["analysis"]
-        response_str = json.dumps(analysis)
-
-        # With sanitization in place, PII should be redacted
-        assert "123-45-6789" not in response_str or "[REDACTED" in response_str
 
 
 if __name__ == "__main__":
