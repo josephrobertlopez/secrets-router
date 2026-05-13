@@ -25,8 +25,11 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from engine import RecipeEngine
+from actuators.cdp_connection import CDPConnection
 from actuators.playwright_cdp import PlaywrightCDPActuator
+from engine import RecipeEngine
+from ollama_client import OllamaClient
+from sanitizer import sanitize_output
 
 # ---------------------------------------------------------------------------
 # Logging — stderr only, never bleeds credential values into MCP responses
@@ -721,6 +724,167 @@ async def secure_run_recipe(
             "gates": [],
             "steps_executed": 0,
             "errors": [str(e)],
+        }
+
+
+@mcp.tool()
+async def secure_analyze_page(
+    analysis_type: str = "full",
+    prompt: str = "",
+    model: str = "",
+) -> dict:
+    """Analyze current page content via local Ollama LLM.
+
+    Extracts page content via CDP, analyzes via local LLM, returns only
+    structured summary. Raw page content never crosses MCP boundary.
+
+    Args:
+        analysis_type: "text" (DOM only), "vision" (screenshot only),
+                       "full" (both), "links" (link summary), "forms" (form structure)
+        prompt: Optional additional context or instructions
+        model: Optional model override (text: qwen2.5-coder:7b, vision: llama3.2-vision:11b)
+
+    Returns:
+        {"status": "analyzed"|"partial"|"error",
+         "analysis": {...structured summary...},
+         "analysis_type": str,
+         "model_used": str,
+         "ollama_available": bool,
+         "content_size_bytes": int}
+    """
+    import time
+
+    start_time = time.time()
+    status = "partial"
+
+    try:
+        # Find CDP port and page WebSocket
+        cdp_port = _find_cdp_port()
+        if cdp_port is None:
+            return {
+                "status": "error",
+                "analysis": {"error": "No browser running with CDP port"},
+                "analysis_type": analysis_type,
+                "model_used": "",
+                "ollama_available": False,
+            }
+
+        ws_url = _find_page_ws(cdp_port)
+        if ws_url is None:
+            return {
+                "status": "error",
+                "analysis": {"error": f"No pages found on CDP port {cdp_port}"},
+                "analysis_type": analysis_type,
+                "model_used": "",
+                "ollama_available": False,
+            }
+
+        # Create persistent CDP connection
+        cdp = CDPConnection(ws_url)
+        await cdp.connect()
+
+        # Create actuator with persistent connection
+        actuator = PlaywrightCDPActuator(
+            find_cdp_port_fn=_find_cdp_port,
+            find_page_ws_fn=_find_page_ws,
+            cdp_fill_fn=_cdp_fill_field,
+        )
+        actuator.cdp = cdp
+        actuator.cdp_port = cdp_port
+        actuator.ws_url = ws_url
+
+        try:
+            # Extract content based on analysis type
+            page_content = None
+            screenshot_b64 = None
+            content_size = 0
+
+            if analysis_type in ("text", "full", "links", "forms"):
+                page_content = await actuator.extract_page_content()
+                content_size += len(str(page_content))
+
+            if analysis_type in ("vision", "full"):
+                await actuator.screenshot(format="jpeg", quality=80)
+                screenshot_b64 = actuator._last_screenshot_b64
+                content_size += len(screenshot_b64) if screenshot_b64 else 0
+
+            # Check Ollama health
+            ollama = OllamaClient()
+            ollama_available = await ollama.health_check()
+
+            # Run analysis if Ollama is available
+            analysis_result = None
+            model_used = ""
+
+            if ollama_available:
+                if analysis_type in ("text", "full", "links", "forms") and page_content:
+                    text_model = model if model else "qwen2.5-coder:7b"
+                    try:
+                        analysis_result = await ollama.analyze_text(
+                            page_content, model=text_model, prompt=prompt
+                        )
+                        model_used = text_model
+                    except Exception as e:
+                        log.error("Text analysis failed: %s", e)
+                        analysis_result = None
+
+                if analysis_type in ("vision", "full") and screenshot_b64:
+                    vision_model = model if model else "llama3.2-vision:11b"
+                    try:
+                        vision_result = await ollama.analyze_vision(
+                            screenshot_b64, model=vision_model, prompt=prompt
+                        )
+                        if analysis_result is None:
+                            analysis_result = vision_result
+                        else:
+                            # Merge text and vision results
+                            analysis_result.update(vision_result)
+                        model_used = vision_model
+                    except Exception as e:
+                        log.error("Vision analysis failed: %s", e)
+
+            # Fallback to DOM heuristics if no analysis result
+            if analysis_result is None:
+                if page_content:
+                    analysis_result = _dom_fallback_analysis(page_content)
+                    status = "partial"
+                else:
+                    return {
+                        "status": "error",
+                        "analysis": {"error": "Could not extract page content"},
+                        "analysis_type": analysis_type,
+                        "model_used": "",
+                        "ollama_available": ollama_available,
+                    }
+            else:
+                status = "analyzed"
+
+            latency_s = time.time() - start_time
+
+            # Layer 3: Sanitize output before returning to MCP caller
+            analysis_result = sanitize_output(analysis_result)
+
+            return {
+                "status": status,
+                "analysis": analysis_result,
+                "analysis_type": analysis_type,
+                "model_used": model_used,
+                "ollama_available": ollama_available,
+                "latency_s": round(latency_s, 2),
+                "content_size_bytes": content_size,
+            }
+
+        finally:
+            await cdp.close()
+
+    except Exception as e:
+        log.error("secure_analyze_page failed: %s", e)
+        return {
+            "status": "error",
+            "analysis": {"error": str(e)},
+            "analysis_type": analysis_type,
+            "model_used": "",
+            "ollama_available": False,
         }
 
 
